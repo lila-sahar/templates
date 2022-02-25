@@ -32,14 +32,7 @@ input_descriptions <- function(descriptions_path) {
   # importing file
   descriptions_tbl <- read_csv(descriptions_path) %>%
     select(UPC, DESCRIP) %>%
-    rename(description = DESCRIP) %>%
-    mutate(
-      description = recode(
-        description,
-        `CINNAMON TOAST CRUNC` = "Cinnamon Toast Crunch",
-        `KIX` = "Kix",
-        `WHEATIES` = "Wheaties"
-      ))
+    rename(description = DESCRIP)
   
   saveRDS(object = descriptions_tbl, file = "../R/descriptions_tbl.rds")
   
@@ -114,53 +107,6 @@ input_dates <- function() {
 
 # 2.2 Joining the Tibbles ----
 
-# this tibble discovers the three brands that have the most data in the dataset
-# to limit the amount of data in the model
-get_top_three <- function(descriptions_tbl, prices_tbl) {
-  # filtering for non-negatives and counting rows by UPCS
-  top_three_brands_tbl <- prices_tbl %>%
-    inner_join(descriptions_tbl) %>%
-    group_by(description) %>%
-    summarize(total_count = n()) %>%
-    filter(total_count > 1000) %>%
-    slice_max(total_count, n = 3)
-  
-  saveRDS(object = top_three_brands_tbl, file = "../R/top_three_brands_tbl.rds")
-  
-  return(top_three_brands_tbl)
-}
-
-# this tibble joins all the relevant tables
-get_sales <-
-  function(descriptions_tbl,
-           prices_tbl,
-           top_three_brands_tbl,
-           store_locations_tbl,
-           dates_tbl) {
-    # filtering to top three brands
-    sales_tbl <- prices_tbl %>%
-      inner_join(descriptions_tbl) %>%
-      inner_join(top_three_brands_tbl) %>%
-      inner_join(store_locations_tbl) %>%
-      inner_join(dates_tbl) %>%
-      mutate(revenue = price * move, start_year = year(start)) %>%
-      select(start,
-             end,
-             start_year,
-             price,
-             move,
-             revenue,
-             description,
-             city,
-             zip,
-             lat,
-             lon)
-    
-    saveRDS(object = sales_tbl, file = "../R/sales_tbl.rds")
-    
-    return(sales_tbl)
-  }
-
 # joins prices, description, and dates table for financial stats
 product_detail_tbl <- prices_tbl %>%
   inner_join(dates_tbl, by = c("week" = "week")) %>%
@@ -189,18 +135,6 @@ product_detail_tbl <- prices_tbl %>%
     ))
 
 # 2.4 Modified Datasets ----
-
-# this tibble takes a sample of 1000 for the bootstrap
-get_sales_sample <- function(sales_tbl) {
-  #selecting a sample from each brand
-  sales_sample_tbl <- sales_tbl %>%
-    group_by(description) %>%
-    sample_n(1000)
-  
-  saveRDS(object = sales_sample_tbl, file = "../R/sales_sample_tbl.rds")
-  
-  return(sales_sample_tbl)
-}
 
 # this tibble looks for the cereal brands that were used for the nine years of the experiment
 product_lookup_tbl <- product_detail_tbl %>%
@@ -239,47 +173,7 @@ product_summary_wide_tbl <- product_summary_tbl %>%
   pivot_wider(names_from = Year, values_from = Value)
 
 
-# 3.0 BOOTSTRAP MODEL ----
-
-# 3.1 Create Model ----
-
-get_bootstrap <- function(sales_tbl) {
-  
-  # bootstrap
-  sales_tbl %>%
-    mutate(move = log(move), price = log(price)) %>%
-    specify(formula = move ~ price) %>%
-    generate(reps = 1000, type = "bootstrap") %>%
-    calculate(stat = "slope")
-}
-
-get_betas <- function(sales_tbl) {
-  
-  # obtain betas
-  bootstrap_tbl <- sales_tbl %>%
-    group_by(description) %>%
-    nest() %>%
-    mutate(bootstrap_slopes = purrr::map(data, get_bootstrap))
-  
-  saveRDS(object = bootstrap_tbl, file = "../R/bootstrap_tbl.rds")
-  
-  return(bootstrap_tbl)
-}
-
-# obtain confidence interval for bootstrap
-get_ci_for_bootstrap <- function(bootstrap_tbl) {
-  
-  ci <- bootstrap_tbl %>%
-    mutate(perc_ci = purrr::map(bootstrap_slopes, get_confidence_interval, level = 0.95, type = 'percentile')) %>%
-    unnest(perc_ci)
-  
-  saveRDS(object = ci, file = "../R/ci.rds")
-  
-  return(ci)
-}
-
-
-# 4.0 VISUALS: UNDERSTAND THE DATA ----
+# 3.0 VISUALS: UNDERSTAND THE DATA ----
 
 # stacked bar graph of Year on Revenue
 product_summary_tbl %>%
@@ -299,41 +193,3 @@ product_summary_tbl %>%
   scale_y_continuous(labels = scales::dollar_format()) +
   labs(title = "Annual Revenue")
 
-plot_bootstrap <- function(bootstrap_tbl, brand = "none") {
-  
-  if (brand == "Cinnamon Toast Crunch") {
-    p <- ggplot(bootstrap_tbl %>% filter(description == "Cinnamon Toast Crunch") %>% unnest(bootstrap_slopes) %>% select(replicate, stat), aes(stat)) +
-      geom_density() + 
-      geom_vline(xintercept = ci %>% filter(description == "Cinnamon Toast Crunch") %>% pull(lower_ci), linetype = "dotted", color = "red") +
-      geom_vline(xintercept = ci %>% filter(description == "Cinnamon Toast Crunch") %>% pull(upper_ci), linetype = "dotted", color = "red") +
-      labs(title = "Bootstrap of Means", x = "Estimates of Beta", y = "Count") +
-      theme(plot.title = element_text(hjust = .5, face = "bold"))
-    
-    ggplotly(p)
-  }
-  
-  else if (brand = "Wheaties") {
-    
-    p <- ggplot(bootstrap_tbl %>% filter(description == "Wheaties") %>% unnest(bootstrap_slopes) %>% select(replicate, stat), aes(stat)) +
-      geom_density() + 
-      geom_vline(xintercept = ci %>% filter(description == "Wheaties") %>% pull(lower_ci), linetype = "dotted", color = "red") +
-      geom_vline(xintercept = ci %>% filter(description == "Wheaties") %>% pull(upper_ci), linetype = "dotted", color = "red") +
-      labs(title = "Bootstrap of Means", x = "Estimates of Beta", y = "Count") +
-      theme(plot.title = element_text(hjust = .5, face = "bold"))
-    
-    ggplotly(p)
-  }
-  
-  else {
-    
-    p <- ggplot(bootstrap_tbl %>% filter(description == "Kix") %>% unnest(bootstrap_slopes) %>% select(replicate, stat), aes(stat)) +
-      geom_density() + 
-      geom_vline(xintercept = ci %>% filter(description == "Kix") %>% pull(lower_ci), linetype = "dotted", color = "red") +
-      geom_vline(xintercept = ci %>% filter(description == "Kix") %>% pull(upper_ci), linetype = "dotted", color = "red") +
-      labs(title = "Bootstrap of Means", x = "Estimates of Beta", y = "Count") +
-      theme(plot.title = element_text(hjust = .5, face = "bold"))
-    
-    ggplotly(p)
-  }
-  
-}
